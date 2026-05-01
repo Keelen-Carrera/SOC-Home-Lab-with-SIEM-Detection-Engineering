@@ -147,3 +147,215 @@ sudo apt install -y curl wget git net-tools
 ---
 
 ## 5. VM Build — Windows 10 Victim
+
+### 5.1 Create the VM
+
+```bash
+VBoxManage createvm --name "win10-victim" --ostype Windows10_64 --register
+
+VBoxManage modifyvm "win10-victim" \
+  --memory 4096 \
+  --cpus 2 \
+  --nic1 hostonly --hostonlyadapter1 vboxnet0 \
+  --graphicscontroller vboxsvga \
+  --vram 128 \
+  --clipboard bidirectional
+
+VBoxManage createhd --filename ~/VMs/win10-victim.vdi --size 61440
+VBoxManage storagectl "win10-victim" --name "SATA" --add sata
+VBoxManage storageattach "win10-victim" --storagectl "SATA" \
+  --port 0 --device 0 --type hdd --medium ~/VMs/win10-victim.vdi
+
+VBoxManage storageattach "win10-victim" --storagectl "SATA" \
+  --port 1 --device 0 --type dvddrive \
+  --medium /path/to/Win10_22H2_English_x64.iso
+```
+
+### 5.2 Post-install Windows configuration
+
+Run these in an **elevated PowerShell** after installation:
+
+```powershell
+# Set static IP
+New-NetIPAddress -InterfaceAlias "Ethernet" `
+  -IPAddress 192.168.56.20 `
+  -PrefixLength 24
+
+# Enable PowerShell script execution (for Atomic Red Team)
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+
+# Enable WinRM (required for remote management testing)
+Enable-PSRemoting -Force
+
+# Enable SMB for lateral movement simulation
+Set-SmbServerConfiguration -EnableSMB2Protocol $true -Force
+
+# Disable Windows Defender real-time protection (lab only — re-enable after)
+# WARNING: Only do this in an isolated lab VM
+Set-MpPreference -DisableRealtimeMonitoring $true
+
+# Enable PowerShell Script Block Logging (feeds into Wazuh detections)
+$regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+New-Item -Path $regPath -Force | Out-Null
+Set-ItemProperty -Path $regPath -Name "EnableScriptBlockLogging" -Value 1
+
+# Enable Command Process Auditing
+auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable
+```
+
+---
+
+##   hydra \
+  crackmapexec \
+  impacket-scripts \
+  smbclient \
+  nmap \
+  metasploit-framework
+
+# Install Mimikatz (via Wine for Windows binary testing, or use pypykatz)
+pip3 install pypykatz
+```
+
+---
+
+## 7. Wazuh Deployment
+
+Wazuh is deployed on `siem-server` using the official all-in-one installer, which installs the Wazuh manager, indexer (OpenSearch), and dashboard in a single script.
+
+```bash
+# On siem-server (192.168.56.30)
+
+# Download installer
+curl -sO https://packages.wazuh.com/4.x/wazuh-install.sh
+curl -sO https://packages.wazuh.com/4.x/config.yml
+
+# Edit config.yml — set node IPs to 192.168.56.30
+sed -i 's/<node_ip>/192.168.56.30/g' config.yml
+
+# Run installer (takes 5–10 minutes)
+sudo bash wazuh-install.sh -a
+
+# Save the admin password printed at the end of install — you'll need it for the dashboard
+```
+
+### 7.1 Verify services
+
+```bash
+sudo systemctl status wazuh-manager
+sudo systemctl status wazuh-indexer
+sudo systemctl status wazuh-dashboard
+
+# All three should show: active (running)
+```
+
+### 7.2 Access the dashboard
+
+Open a browser on your host machine and navigate to:
+
+```
+https://192.168.56.30
+```
+
+Login with `admin` and the password saved during install.
+
+> **[SCREENSHOT]** — Wazuh dashboard home page showing 0 agents enrolled, system health green.
+
+---
+
+## 8. Agent Enrollment
+
+### 8.1 Install the Wazuh agent on Windows
+
+Run in **elevated PowerShell** on `win10-victim`:
+
+```powershell
+# Download agent installer
+Invoke-WebRequest -Uri "https://packages.wazuh.com/4.x/windows/wazuh-agent-4.x.x-1.msi" `
+  -OutFile "C:\wazuh-agent.msi"
+
+# Install and point to manager
+msiexec /i C:\wazuh-agent.msi `
+  WAZUH_MANAGER="192.168.56.30" `
+  WAZUH_AGENT_NAME="win10-victim" /quiet
+
+# Start the agent service
+NET START WazuhSvc
+```
+
+### 8.2 Verify enrollment on the manager
+
+```bash
+# On siem-server
+sudo /var/ossec/bin/agent_control -l
+# Should list win10-victim with status: Active
+```
+
+> **[SCREENSHOT]** — Wazuh dashboard Agents page showing `win10-victim` enrolled and Active.
+
+---
+
+## 9. Log Source Verification
+
+Before building detections, confirm the expected log sources are flowing into Wazuh.
+
+### 9.1 Windows Event Logs
+
+In the Wazuh dashboard, navigate to **Security Events** and filter by agent `win10-victim`. Confirm you see:
+
+| Event ID | Description |
+|---|---|
+| 4624 | Successful logon |
+| 4625 | Failed logon |
+| 4688 | Process creation |
+| 4698 | Scheduled task created |
+| 4104 | PowerShell Script Block |
+
+### 9.2 Trigger a test event
+
+```powershell
+# On win10-victim — run a benign PowerShell command to generate Event ID 4104
+powershell.exe -Command "Write-Host 'Wazuh test event'"
+```
+
+Check the Wazuh dashboard for the resulting alert within 30 seconds.
+
+> **[SCREENSHOT]** — Wazuh Security Events showing PowerShell Event ID 4104 from win10-victim.
+
+### 9.3 Confirm Wazuh ossec.conf includes Windows log channels
+
+```bash
+# On siem-server — verify agent config is pushed correctly
+sudo cat /var/ossec/etc/shared/default/agent.conf
+```
+
+The config should include these `<localfile>` entries (add them if missing):
+
+```xml
+<ossec_config>
+  <localfile>
+    <location>Security</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+  <localfile>
+    <location>Microsoft-Windows-PowerShell/Operational</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+  <localfile>
+    <location>Microsoft-Windows-Sysmon/Operational</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+</ossec_config>
+```
+
+---
+
+## 10. What's Next
+
+With the lab environment running and logs verified, the next steps are:
+
+| Step | Location |
+|---|---|
+| Custom Sigma detection rules | [`detections/`](./detections/) |
+| Per-rule detection walkthroughs | [`detections/walkthroughs/`](./detections/walkthroughs/) |
+| Atomic Red Team simulations | [`simulations/`](./simulations/) |
+| Hardening recommendations | [`hardening-recommendations.md`](./hardening-recommendations.md) |
