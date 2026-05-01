@@ -115,5 +115,5 @@ Each sub-project's `README.md` is a self-contained guide. Read them top-to-botto
 ## Contact
 
 - GitHub: [github.com/keelen-carrera](https://github.com/keelen-carrera)
-- LinkedIn: *[Keelen Carrera LinkedInL](https://www.linkedin.com/in/keelencarrera/)*
-- Email: *[Keelen Carrera Email](keelencarrera@proton.me)*
+- LinkedIn: *[Keelen Carrera LinkedIn](https://www.linkedin.com/in/keelencarrera/)*
+- Email: *keelencarrera@proton.me*
