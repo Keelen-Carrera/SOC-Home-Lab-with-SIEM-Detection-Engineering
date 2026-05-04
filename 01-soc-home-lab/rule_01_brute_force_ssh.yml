@@ -1,0 +1,64 @@
+title: Brute Force SSH Login Attempts
+id: a1b2c3d4-0001-4e5f-8a9b-000000000001
+status: experimental
+description: >
+  Detects a high volume of failed SSH authentication attempts from a single
+  source IP within a short time window, indicative of automated brute-force
+  or password-spraying activity against SSH services.
+author: Keelen Carrera
+date: 2025-01-01
+modified: 2025-01-01
+
+references:
+  - https://attack.mitre.org/techniques/T1110/001/
+  - https://www.openssh.com/security.html
+
+tags:
+  - attack.credential_access
+  - attack.t1110
+  - attack.t1110.001
+
+logsource:
+  product: linux
+  service: auth
+
+detection:
+  selection:
+    data.srcuser: '*'
+  keywords:
+    - 'Failed password'
+    - 'Invalid user'
+    - 'authentication failure'
+  timeframe: 1m
+  condition: keywords | count() by src_ip > 5
+
+fields:
+  - src_ip
+  - data.srcuser
+  - data.dstport
+
+falsepositives:
+  - Misconfigured automation or monitoring tools
+  - Legitimate users mistyping credentials repeatedly
+  - Password manager sync failures
+
+level: medium
+
+# --- Wazuh native rule (ossec rule syntax) ---
+# Place this block in /var/ossec/etc/rules/local_rules.xml on the Wazuh manager.
+# The Sigma rule above is the source-of-truth; the block below is the compiled
+# Wazuh implementation for this lab.
+#
+# <group name="sshd,authentication_failed,">
+#
+#   <rule id="100001" level="10" frequency="5" timeframe="60">
+#     <if_matched_sid>5716</if_matched_sid>
+#     <same_source_ip />
+#     <description>Brute force SSH: 5+ failed logins from same IP in 60s</description>
+#     <mitre>
+#       <id>T1110.001</id>
+#     </mitre>
+#     <group>authentication_failures,brute_force,</group>
+#   </rule>
+#
+# </group>

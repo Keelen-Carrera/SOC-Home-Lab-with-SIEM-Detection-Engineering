@@ -1,0 +1,114 @@
+title: Mimikatz Credential Dumping Indicators
+id: a1b2c3d4-0003-4e5f-8a9b-000000000003
+status: experimental
+description: >
+  Detects indicators associated with Mimikatz credential dumping activity,
+  including process access to LSASS memory, known Mimikatz command strings
+  in process command lines, and characteristic module load patterns.
+  Mimikatz is the most commonly used tool for extracting plaintext passwords,
+  hashes, and Kerberos tickets from Windows memory.
+author: Keelen Carrera
+date: 2025-01-01
+modified: 2025-01-01
+
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://github.com/gentilkiwi/mimikatz
+  - https://www.ired.team/offensive-security/credential-access-and-credential-dumping/dumping-credentials-from-lsass-process-without-mimikatz
+
+tags:
+  - attack.credential_access
+  - attack.t1003
+  - attack.t1003.001
+
+logsource:
+  product: windows
+  category: process_creation
+
+detection:
+  # Detection vector 1: known Mimikatz binary names or command keywords
+  selection_commandline:
+    CommandLine|contains:
+      - 'sekurlsa::logonpasswords'
+      - 'sekurlsa::wdigest'
+      - 'lsadump::sam'
+      - 'lsadump::dcsync'
+      - 'lsadump::lsa'
+      - 'kerberos::list'
+      - 'kerberos::ptt'
+      - 'privilege::debug'
+      - 'token::elevate'
+      - 'mimikatz'
+      - 'mimilib'
+
+  # Detection vector 2: suspicious process opening LSASS with high-privilege access
+  # (requires Sysmon Event ID 10 — ProcessAccess)
+  selection_lsass_access:
+    TargetImage|endswith: '\lsass.exe'
+    GrantedAccess|contains:
+      - '0x1010'
+      - '0x1410'
+      - '0x1438'
+      - '0x143a'
+      - '0x1fffff'
+      - '0x1f1fff'
+
+  # Detection vector 3: known Mimikatz output artifacts written to disk
+  selection_file_write:
+    TargetFilename|contains:
+      - 'mimikatz'
+      - 'mimi.txt'
+      - 'sekurlsa'
+      - 'kerberos_tickets'
+
+  condition: selection_commandline or selection_lsass_access or selection_file_write
+
+fields:
+  - Image
+  - CommandLine
+  - TargetImage
+  - GrantedAccess
+  - User
+  - ProcessId
+
+falsepositives:
+  - Authorized red team or penetration testing engagements
+  - Security tooling that legitimately reads LSASS (AV/EDR products)
+  - Windows Defender Credential Guard health checks
+
+level: critical
+
+# --- Wazuh native rule (ossec rule syntax) ---
+# Vector 1: Command-line keyword detection (Event ID 4688 or Sysmon EID 1)
+#
+# <group name="windows,mimikatz,credential_access,">
+#
+#   <rule id="100003" level="15">
+#     <if_group>windows</if_group>
+#     <field name="win.eventdata.commandLine" type="pcre2">
+#       (?i)(sekurlsa::|lsadump::|kerberos::ptt|privilege::debug|
+#       token::elevate|mimikatz|mimilib)
+#     </field>
+#     <description>Mimikatz: known command module string detected in process arguments</description>
+#     <mitre>
+#       <id>T1003.001</id>
+#     </mitre>
+#     <group>mimikatz,credential_dumping,</group>
+#   </rule>
+#
+#   <!-- Vector 2: LSASS memory access (requires Sysmon Event ID 10) -->
+#   <rule id="100004" level="14">
+#     <if_group>windows</if_group>
+#     <field name="win.system.eventID">10</field>
+#     <field name="win.eventdata.targetImage" type="pcre2">(?i)lsass\.exe</field>
+#     <field name="win.eventdata.grantedAccess" type="pcre2">
+#       0x1010|0x1410|0x1438|0x143a|0x1fffff|0x1f1fff
+#     </field>
+#     <description>Mimikatz: suspicious process opened LSASS with credential-read access rights</description>
+#     <mitre>
+#       <id>T1003.001</id>
+#     </mitre>
+#     <group>mimikatz,lsass_access,credential_dumping,</group>
+#   </rule>
+#
+# </group>

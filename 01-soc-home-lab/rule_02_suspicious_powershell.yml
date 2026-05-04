@@ -1,0 +1,91 @@
+title: Suspicious PowerShell Execution
+id: a1b2c3d4-0002-4e5f-8a9b-000000000002
+status: experimental
+description: >
+  Detects PowerShell invocations that use obfuscation flags or known-malicious
+  argument patterns commonly seen in fileless malware, downloaders, and
+  post-exploitation frameworks (Cobalt Strike, Empire, Metasploit).
+  Triggers on encoded commands, hidden window style, bypass execution policy,
+  and remote download cradles.
+author: Keelen Carrera
+date: 2025-01-01
+modified: 2025-01-01
+
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+  - https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies
+
+tags:
+  - attack.execution
+  - attack.t1059
+  - attack.t1059.001
+  - attack.defense_evasion
+  - attack.t1027
+
+logsource:
+  product: windows
+  category: process_creation
+
+detection:
+  selection_image:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\pwsh.exe'
+  selection_flags:
+    CommandLine|contains:
+      - ' -EncodedCommand '
+      - ' -enc '
+      - ' -ec '
+      - ' -NonInteractive '
+      - ' -NoProfile '
+      - ' -WindowStyle Hidden'
+      - ' -w hidden'
+      - ' bypass'
+      - 'IEX'
+      - 'Invoke-Expression'
+      - 'Invoke-WebRequest'
+      - 'Net.WebClient'
+      - 'DownloadString'
+      - 'DownloadFile'
+      - 'FromBase64String'
+      - 'System.Reflection.Assembly'
+  condition: selection_image and selection_flags
+
+fields:
+  - Image
+  - CommandLine
+  - ParentImage
+  - User
+  - ProcessId
+
+falsepositives:
+  - Legitimate administrative scripts using encoded commands
+  - Software installers using PowerShell download cradles
+  - SCCM/Intune management tasks
+  - Security tools (e.g., Nessus, Qualys agents)
+
+level: high
+
+# --- Wazuh native rule (ossec rule syntax) ---
+# Requires Windows Event ID 4688 (Process Creation) with CommandLine auditing
+# enabled, or Sysmon Event ID 1.
+#
+# <group name="windows,powershell,">
+#
+#   <rule id="100002" level="12">
+#     <if_group>windows</if_group>
+#     <field name="win.eventdata.image" type="pcre2">(?i)powershell\.exe|pwsh\.exe</field>
+#     <field name="win.eventdata.commandLine" type="pcre2">
+#       (?i)(-enc|-EncodedCommand|-ec\s|-NonInteractive|-WindowStyle\s+[Hh]idden|
+#       -w\s+hidden|bypass|IEX|Invoke-Expression|Invoke-WebRequest|
+#       Net\.WebClient|DownloadString|DownloadFile|FromBase64String|
+#       System\.Reflection\.Assembly)
+#     </field>
+#     <description>Suspicious PowerShell: obfuscation or download cradle detected</description>
+#     <mitre>
+#       <id>T1059.001</id>
+#     </mitre>
+#     <group>powershell,execution,defense_evasion,</group>
+#   </rule>
+#
+# </group>
