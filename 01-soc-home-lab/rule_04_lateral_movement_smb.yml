@@ -1,0 +1,122 @@
+title: Lateral Movement via SMB — Remote Service or Admin Share Access
+id: a1b2c3d4-0004-4e5f-8a9b-000000000004
+status: experimental
+description: >
+  Detects lateral movement activity over SMB, specifically authentication to
+  administrative shares (ADMIN$, C$, IPC$) from non-standard source hosts,
+  remote service creation via SCM over SMB, and tool-specific SMB patterns
+  produced by PsExec, Impacket's smbexec/psexec.py, and CrackMapExec.
+  These techniques are heavily used in ransomware campaigns and APT lateral
+  movement phases.
+author: Keelen Carrera
+date: 2025-01-01
+modified: 2025-01-01
+
+references:
+  - https://attack.mitre.org/techniques/T1021/002/
+  - https://www.impacket.org/
+  - https://docs.microsoft.com/en-us/sysinternals/downloads/psexec
+
+tags:
+  - attack.lateral_movement
+  - attack.t1021
+  - attack.t1021.002
+
+logsource:
+  product: windows
+  service: security
+
+detection:
+  # Detection vector 1: logon to administrative shares (Event ID 5140)
+  selection_share_access:
+    EventID: 5140
+    ShareName|contains:
+      - 'ADMIN$'
+      - 'C$'
+      - 'IPC$'
+
+  # Exclude local system access (noise reduction)
+  filter_local:
+    IpAddress:
+      - '127.0.0.1'
+      - '::1'
+      - '-'
+
+  # Detection vector 2: remote service installation (Event ID 7045) —
+  # PsExec and Impacket create services with random or known names
+  selection_remote_service:
+    EventID: 7045
+    ServiceFileName|contains:
+      - '%COMSPEC%'
+      - 'cmd.exe'
+      - 'powershell.exe'
+      - '\\\\'
+    ServiceType: 'user mode service'
+
+  # Detection vector 3: named pipe creation consistent with PsExec (Sysmon EID 17/18)
+  selection_named_pipe:
+    EventID:
+      - 17
+      - 18
+    PipeName|contains:
+      - '\psexesvc'
+      - '\paexec'
+      - '\remcom_comunication'
+      - '\csexec'
+
+  condition: >
+    (selection_share_access and not filter_local)
+    or selection_remote_service
+    or selection_named_pipe
+
+fields:
+  - SubjectUserName
+  - IpAddress
+  - ShareName
+  - ServiceName
+  - ServiceFileName
+  - PipeName
+
+falsepositives:
+  - Legitimate IT admin tools using PsExec for remote management
+  - Backup software accessing administrative shares
+  - Domain controller replication traffic
+  - SCCM/Intune software distribution
+
+level: high
+
+# --- Wazuh native rule (ossec rule syntax) ---
+# Requires Windows Security log (Event IDs 5140, 7045) and optionally Sysmon.
+#
+# <group name="windows,lateral_movement,smb,">
+#
+#   <!-- Vector 1: Admin share access from remote IP -->
+#   <rule id="100005" level="12">
+#     <if_group>windows</if_group>
+#     <field name="win.system.eventID">5140</field>
+#     <field name="win.eventdata.shareName" type="pcre2">(?i)(ADMIN\$|C\$|IPC\$)</field>
+#     <field name="win.eventdata.ipAddress" negate="yes" type="pcre2">
+#       ^(127\.0\.0\.1|::1|-)$
+#     </field>
+#     <description>Lateral Movement: remote access to administrative SMB share</description>
+#     <mitre>
+#       <id>T1021.002</id>
+#     </mitre>
+#     <group>smb,lateral_movement,</group>
+#   </rule>
+#
+#   <!-- Vector 2: Remote service installation via SCM -->
+#   <rule id="100006" level="14">
+#     <if_group>windows</if_group>
+#     <field name="win.system.eventID">7045</field>
+#     <field name="win.eventdata.serviceFileName" type="pcre2">
+#       (?i)(cmd\.exe|powershell\.exe|%COMSPEC%|\\\\)
+#     </field>
+#     <description>Lateral Movement: remote service with shell binary installed via SCM (PsExec/Impacket pattern)</description>
+#     <mitre>
+#       <id>T1021.002</id>
+#     </mitre>
+#     <group>smb,lateral_movement,remote_service,</group>
+#   </rule>
+#
+# </group>

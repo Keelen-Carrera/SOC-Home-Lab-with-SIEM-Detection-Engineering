@@ -1,0 +1,129 @@
+title: Persistence via Scheduled Task Creation
+id: a1b2c3d4-0005-4e5f-8a9b-000000000005
+status: experimental
+description: >
+  Detects scheduled task creation used as a persistence mechanism. Adversaries
+  create scheduled tasks to execute malicious payloads at system startup, user
+  logon, or on a recurring schedule. This rule catches task creation via
+  schtasks.exe, the Task Scheduler COM interface (Event ID 4698), and
+  suspicious task actions pointing to scripting engines, temporary directories,
+  or encoded commands.
+author: Keelen Carrera
+date: 2025-01-01
+modified: 2025-01-01
+
+references:
+  - https://attack.mitre.org/techniques/T1053/005/
+  - https://docs.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-start-page
+
+tags:
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.t1053
+  - attack.t1053.005
+
+logsource:
+  product: windows
+  service: security
+
+detection:
+  # Detection vector 1: Windows Security Event — scheduled task created (EID 4698)
+  selection_event_id:
+    EventID: 4698
+
+  # Detection vector 2: suspicious task command content within the XML blob
+  # (Event ID 4698 embeds full task XML in the event)
+  selection_suspicious_action:
+    EventID: 4698
+    TaskContent|contains:
+      - 'powershell'
+      - 'cmd.exe'
+      - 'wscript'
+      - 'cscript'
+      - 'mshta'
+      - 'rundll32'
+      - 'regsvr32'
+      - 'certutil'
+      - 'bitsadmin'
+      - '%TEMP%'
+      - '%APPDATA%'
+      - 'C:\Users\Public'
+      - 'C:\Windows\Temp'
+      - '-enc'
+      - '-EncodedCommand'
+      - 'IEX'
+      - 'http'
+
+  # Detection vector 3: schtasks.exe invocation with /create flag (process_creation)
+  selection_schtasks_create:
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains: '/create'
+
+  # Elevate severity when schtasks points to suspicious paths or uses encoded PS
+  selection_schtasks_suspicious:
+    Image|endswith: '\schtasks.exe'
+    CommandLine|contains:
+      - '/create'
+    CommandLine|contains:
+      - 'powershell'
+      - '-enc'
+      - 'mshta'
+      - 'wscript'
+      - 'cscript'
+      - 'rundll32'
+      - '%TEMP%'
+      - '%APPDATA%'
+      - 'C:\Users\Public'
+
+  condition: >
+    selection_suspicious_action
+    or selection_schtasks_suspicious
+
+fields:
+  - SubjectUserName
+  - TaskName
+  - TaskContent
+  - Image
+  - CommandLine
+  - ParentImage
+
+falsepositives:
+  - Legitimate software installers registering update tasks
+  - Windows Update and system maintenance tasks
+  - Administrative scripts automating routine jobs
+  - Security products scheduling scans
+
+level: high
+
+# --- Wazuh native rule (ossec rule syntax) ---
+# Requires Windows Security log (Event ID 4698) for task creation events.
+#
+# <group name="windows,persistence,scheduled_task,">
+#
+#   <!-- Vector 1: Any scheduled task creation — low-level alert -->
+#   <rule id="100007" level="8">
+#     <if_group>windows</if_group>
+#     <field name="win.system.eventID">4698</field>
+#     <description>Persistence: scheduled task created (Event ID 4698)</description>
+#     <mitre>
+#       <id>T1053.005</id>
+#     </mitre>
+#     <group>persistence,scheduled_task,</group>
+#   </rule>
+#
+#   <!-- Vector 2: Task XML contains suspicious scripting or LOLBin -->
+#   <rule id="100008" level="13">
+#     <if_sid>100007</if_sid>
+#     <field name="win.eventdata.taskContent" type="pcre2">
+#       (?i)(powershell|-enc|mshta|wscript|cscript|rundll32|certutil|
+#       bitsadmin|%TEMP%|%APPDATA%|C:\\Users\\Public|C:\\Windows\\Temp|
+#       IEX|http)
+#     </field>
+#     <description>Persistence: scheduled task action contains suspicious LOLBin or script engine reference</description>
+#     <mitre>
+#       <id>T1053.005</id>
+#     </mitre>
+#     <group>persistence,scheduled_task,lolbin,</group>
+#   </rule>
+#
+# </group>
